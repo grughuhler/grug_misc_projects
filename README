@@ -1,0 +1,18 @@
+Thus directory contains information about some of Grug Huhler's
+electronics projects.  See YouTube Channel:
+
+  http://www.youtube.com/@electronics.tinker
+
+./tayloe_mixer: https://youtu.be/UKtBHGlY9Kg
+   adalm2000_connections.jpg   (schematic of sorts)
+
+./tayloe_receiver: https://youtu.be/hTzIiyURii8
+   receiver.jpg  (schematic of sorts)
+
+./tayloe_upconverter: https://youtu.be/Y2qJnh9LEHk
+  breadboard_circuit.jpg
+  quad_upconverter.asc     (LTSpice model-- runs slowly)
+  tr_path.jpg
+
+./x9c103_speed: https://youtu.be/HC5zzTrXInQ
+  digi_pot_test.ino   (Arduino sketch)
