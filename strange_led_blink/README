@@ -1,0 +1,19 @@
+This project blinks an LED on the Tang Nano 9K FPGA development board
+a strange way.  Really, it is a demonstration of some Gowin
+clock-related hard IP blocks, specificially:
+
+1. OSC: which is used to produce osc_to_pll 3.125 MHz
+
+2. rPLL: which is used to produce:
+
+   * pll_clk_out 9.375 MHz which is sent to pin 31 for scope viewing
+
+   * pll_clkd_out 0.9375 MHz which is sent a chain of 6 CLKDIVs, each
+      divides by 8.  This signal is also sent to pin 32.
+ 
+3. CLKDIV set to divide by 8.
+
+In the end, the LED on pin 10 blicks at 3.6 Hz.
+
+Last tested using the educational version of the Gowin IDE version
+V1.9.9.03 build 73833.
