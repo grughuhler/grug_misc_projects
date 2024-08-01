@@ -16,3 +16,7 @@ electronics projects.  See YouTube Channel:
 
 ./x9c103_speed: https://youtu.be/HC5zzTrXInQ
   digi_pot_test.ino   (Arduino sketch)
+
+./strange_led_blink: https://youtu.be/cAwbOCInDKU?si=pxm3Q6C_8n0aAkrE
+  This Tang Nano 9K project demonstrates some clock-related Gowin
+  hard IP clocks, using them to blink an LED.
