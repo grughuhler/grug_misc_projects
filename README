@@ -19,4 +19,6 @@ electronics projects.  See YouTube Channel:
 
 ./strange_led_blink: https://youtu.be/cAwbOCInDKU?si=pxm3Q6C_8n0aAkrE
   This Tang Nano 9K project demonstrates some clock-related Gowin
-  hard IP clocks, using them to blink an LED.
+  hard IP clocks, using them to blink an LED.  Note the project source
+  and file names do not match the video.  I did some cleaning up before
+  uploading to github.
