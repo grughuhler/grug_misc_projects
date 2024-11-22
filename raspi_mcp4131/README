@@ -1,0 +1,26 @@
+Program raspi_mcp4131 uses spidev to allow a Raspberry Pi to
+control an MCP4131 10K digital potentiometer.
+
+Build with "make", run and enter "he" to see a list of commands.  For
+example, enter "wr 0 40" to select wiper position hex 40.  Valid wiper
+positions range from 0 to 80 hex inclusive so a wiper value of hex 40
+should result in a P0W Voltage of around 1.6 V.
+
+Connections are as follows:
+
+* RPI SCLK/GPIO11 to MCP4131
+
+RPI                           MCP4131
+--------                      -------
+3.3V                          Vdd
+3.3V                          P0A
+GND                           Vss
+GND                           P0B
+SCLK/GP11                     CS#
+MOSI/GP10 -- 2.2K Resistor -- SPI/SPO
+MISO/GP09                     SPI/SPO
+
+and measure Volts at MCP4131 P0W.
+
+It is also a good idea to place a 0.1 uF decoupling capacitor
+between MCP4131 Vdd and GND.
