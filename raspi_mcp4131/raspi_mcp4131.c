@@ -13,7 +13,7 @@
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 
-//#define DEBUG 1
+//#define DEBUG 
 
 #define SPIDEV "/dev/spidev0.0"
 #define SPI_WR_HZ 2000000
@@ -61,8 +61,7 @@ unsigned short two_byte_cmd(unsigned char addr, unsigned char cmd,
   struct spi_ioc_transfer spi;
 
   /* The 0x3 is needed in case of CMD_ERR */
-  tx[0] = (addr << 4) | (cmd << 2) |
-    ((cmd == CMD_READ) ? 0x3 : 0x2);
+  tx[0] = (addr << 4) | (cmd << 2) | ((cmd == CMD_READ) ? 0x3 : 0x2);
 
   /* For reads must drive 0xff, for writes drive the data */
   tx[1] = (cmd == CMD_READ) ? 0xff : data;
@@ -84,7 +83,7 @@ void pot_err(void)
 {
   unsigned char res;
   
-  res = one_byte_cmd(5, CMD_DECR);
+  res = one_byte_cmd(0xa, CMD_DECR);
 #ifdef DEBUG
   printf("err: 0x%02x\n", res);
 #endif  
@@ -175,7 +174,7 @@ void help(void)
 {
   printf("de: decrement wiper\n"
          "in: increment wiper\n"
-         "er: erronous decrement\n"
+         "er: erroneous decrement\n"
          "rd addr: read (addr 0 is wiper)\n"
          "rt: a test of reads\n"
          "wr addr val: write\n"

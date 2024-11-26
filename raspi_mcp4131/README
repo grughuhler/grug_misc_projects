@@ -1,6 +1,13 @@
 Program raspi_mcp4131 uses spidev to allow a Raspberry Pi to
 control an MCP4131 10K digital potentiometer.
 
+You must enable the SPI interface on the Raspberry Pi:
+
+  sudo raspi-config
+
+Pick "Interface Options" and then "SPI" and "Yes" and "Finish". You
+might need to reboot.
+
 Build with "make", run and enter "he" to see a list of commands.  For
 example, enter "wr 0 40" to select wiper position hex 40.  Valid wiper
 positions range from 0 to 80 hex inclusive so a wiper value of hex 40

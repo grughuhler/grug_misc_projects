@@ -22,3 +22,8 @@ electronics projects.  See YouTube Channel:
   hard IP clocks, using them to blink an LED.  Note the project source
   and file names do not match the video.  I did some cleaning up before
   uploading to github.
+
+./raspi_mcp4131:
+  This video discusses how the MCP4131 digital potentiomer uses SPI
+  in an unusual bidirectional way.  It also shows how to use SPIDEV
+  on a Raspberry Pi (model Zero tested) to command the MCP4131.
