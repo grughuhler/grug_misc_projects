@@ -1,0 +1,19 @@
+This is the Arduino script that I used to experiment with the x9c103
+digital potentiometer.
+
+It accepts commands via serial port.
+
+Enter 0 to 99 to command the pot to a particular position.
+
+Enter tN to set the INCR# delay to 2*N, for example t10 for 20 usec of time
+for an INCR# cycle.  The timing is not perfectly consistent.
+
+For example, pick an INCR# delay and then do a 0 followed by a 99 to
+see how smoothly the wiper volate rises.
+
+For me, it is jagged with minimum delay (t1) but smooth with a delay
+chosen by a conservative reading of the datasheet (t50).  In my test, the
+signal can look good with t10 (20 usec INCR# cycle time), but I don't
+know that the datasheet makes any such guarantee.
+
+See video link in the parent directory README.

@@ -16,14 +16,12 @@
  *  datasheet.
  */
 
-#define DELAY_USEC 100
-
 #define PIN_CS  16
 #define PIN_INC 4
 #define PIN_UD  17
 
 int pos;
-unsigned int inc_delay_usec = 50;
+unsigned int delay_usec = 50;
 
 void wiper_change(boolean up, boolean store)
 {
@@ -33,21 +31,21 @@ void wiper_change(boolean up, boolean store)
   
   digitalWrite(PIN_UD, ud_val);
   digitalWrite(PIN_CS, LOW);
-  delayMicroseconds(DELAY_USEC);
+  delayMicroseconds(delay_usec);
   digitalWrite(PIN_INC, LOW);
-  delayMicroseconds(DELAY_USEC);
+  delayMicroseconds(delay_usec);
   if (store) {
     digitalWrite(PIN_INC, HIGH);
-    delayMicroseconds(DELAY_USEC);
+    delayMicroseconds(delay_usec);
     digitalWrite(PIN_CS, HIGH);
     digitalWrite(PIN_UD, HIGH);
   } else {
     digitalWrite(PIN_CS, HIGH);
     digitalWrite(PIN_UD, HIGH);
-    delayMicroseconds(DELAY_USEC);
+    delayMicroseconds(delay_usec);
     digitalWrite(PIN_INC, HIGH);   
   }
-  delayMicroseconds(DELAY_USEC);
+  delayMicroseconds(delay_usec);
 }
 
 
@@ -82,10 +80,10 @@ void set_to_pos2(int new_pos)
   
   for (i = 0; i < diff; i++) {
     digitalWrite(PIN_INC, LOW);
-    delayMicroseconds(inc_delay_usec);
+    delayMicroseconds(delay_usec);
     // Delay INC# going high for last one to avoid store
     if (i != (diff - 1)) digitalWrite(PIN_INC, HIGH);
-    delayMicroseconds(inc_delay_usec);
+    delayMicroseconds(delay_usec);
   }
   // CS# goes high before INC# to avoid store
   digitalWrite(PIN_CS, HIGH);
@@ -102,6 +100,7 @@ void sweep(void)
 {
   int i;
 
+  Serial.println("Triangle");
   set_to_zero();
   for (i = 0; i < POT_NUM_POS - 1; i++) wiper_change(true, false);
   for (i = 0; i < POT_NUM_POS - 1; i++) wiper_change(false, false);
@@ -112,6 +111,7 @@ void slow_ramp(void)
 {
   int i;
 
+  Serial.println("Slow ramp");
   set_to_zero();
   delay(1500);
 
@@ -155,8 +155,9 @@ void loop()
   unsigned int tmp;
 
   Serial.print("Enter 0 to ");
-  Serial.print(POT_NUM_POS);
-  Serial.println(" to set pot or tUSEC to set inc delay\n");
+  Serial.print(POT_NUM_POS - 1);
+  Serial.println(" to set pot or tUSEC to set delay (like t5) for 2*5 usec");
+  Serial.println("or enter 9999 for a triangle");
   
   while (Serial.available() == 0) {}
   buf = Serial.readString();
@@ -165,10 +166,10 @@ void loop()
   if (buf[0] == 't') {
     buf = buf.substring(1);
     tmp = buf.toInt();
-    if ((tmp >= 0) && (tmp <= 100)) {
-      inc_delay_usec = tmp;
-      Serial.print("inc delay now ");
-      Serial.print(inc_delay_usec);
+    if (tmp >= 0) {
+      delay_usec = tmp;
+      Serial.print("delay now ");
+      Serial.print(delay_usec);
       Serial.println(" usec for both low and high");
     } else {
       Serial.println("delay unchanged, value out of bounds");
@@ -186,7 +187,7 @@ void loop()
     Serial.print("Setting pos ");
     Serial.print(new_pos);
     Serial.print(" with delay ");
-    Serial.print(inc_delay_usec);
+    Serial.print(delay_usec);
     Serial.println(" usec");
     set_to_pos2(new_pos);
   }
