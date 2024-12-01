@@ -27,3 +27,13 @@ electronics projects.  See YouTube Channel:
   This video discusses how the MCP4131 digital potentiomer uses SPI
   in an unusual bidirectional way.  It also shows how to use SPIDEV
   on a Raspberry Pi (model Zero tested) to command the MCP4131.
+
+./tang_nano_mac_fpga: https://youtu.be/qTdrYL4ayPM
+                      https://youtu.be/pj_xLoxf1hY
+ These videos are about doing arithmetic on the Tang Nano 9K with
+ data stored in shift registers.  The FPGA is commanded by software
+ on a Raspberry Pi Zero (other models should work also).  In the
+ first video, there are two unidirectional data lines between the
+ RPI and the FPGA.  In the second, there is a single bidirectional
+ data line.  This repo is a cleaned up and expanded of the repo
+ referenced in the original videos.  Use this one.

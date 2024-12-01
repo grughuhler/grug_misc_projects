@@ -1,0 +1,46 @@
+This directory contains C and verilog source files for the "mac_fpga"
+project for the Tang Nano 9K FPGA and also the mac_fpga_1wire project.
+The former uses separate send and receive data lines between a
+Raspberry Pi and the FPGA.  The latter uses a single bidirectional
+data line.
+
+There are videos about this on YouTube:
+
+https://youtu.be/qTdrYL4ayPM?si=Si6v49RGTCkXSw_N
+https://youtu.be/pj_xLoxf1hY?si=CtEBWpYmB8bNOTGb
+
+Each version has its own Gowin IDE project file:
+
+1. tang_mac_fpga.gprj    (original, 2-wire)
+2. mac_fpga_1_wire.gprj  (1-wire)
+
+Open and build the project file you want, and then
+use build the software in directory c.
+
+Use mac_command with tang_mac_fpga.gprj and
+mac_command1 with mac_fpga_1_wire.gprj.
+
+Note: Pin connections for 1-wire version changed
+from previous git.  The regular (2-wire) and the
+1-wire versions are now more consistent.
+
+Pin connections for two-wire, original version:
+
+Function FPGA Pin RPI Zero Pin Color I Used
+-------- -------- ------------ ------------
+CLK        35        GPIO21      Yellow
+CMD[1]     41        GPIO20      Green
+CMD[0]     42        GPIO16      Blue
+DIN        40        GPIO26      Orange
+DOUT       34        GPIO19      White
+Ground     GND       GND
+
+Pin connections for 1-wire version (note RPI changes):
+
+Function FPGA Pin RPI Zero Pin Color I Used
+-------- -------- ------------ ------------
+CLK        35        GPIO21      Yellow
+CMD[1]     41        GPIO20      Green
+CMD[0]     42        GPIO16      Blue
+IOP        40        GPIO26      Orange
+Ground     GND       GND

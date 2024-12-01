@@ -1,0 +1,34 @@
+This directory contains that is built and tested on a Raspberry Pi
+Zero (but should work on other Raspberry Pis).
+
+There are two program:
+
+One for the 2-wire version of the project: mac_command
+and one for the 1-wire (bidirectional) verison: mac_command1.
+
+These programs use the pigpio library so
+
+   sudo apt install libpigpio-dev
+
+Then, just "make" to build on the Raspberry Pi.  Take a look at the
+Makefile.  It builds two versions of the program: mac_command1 uses a
+single birectional signal while mac_command uses two unidirectional
+signals.  The two use slightly different pins, so pay attention to
+that and be sure to use the correct program.
+
+Run as root, e.g. sudo ./mac_command.
+
+Type "help" to see a list of commands.
+
+Tested on Raspbian 10 and 12.
+
+Be careful that the Raspberry Pi and the FPGA are not confgured as
+outputs at the same time.  That could damage hardware.
+
+For mac_command1, I tested with the iop signal connected between the
+Raspberry Pi and the Tang Nano 9K via a 1k resistor.  This works and
+may provide protection when both are outputs due to error.  But,
+still, avoid conflicting outputs.  The use of the resistor is
+paranoia.
+
+
