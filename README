@@ -43,3 +43,8 @@ electronics projects.  See YouTube Channel:
  RPI and the FPGA.  In the second, there is a single bidirectional
  data line.  This repo is a cleaned up and expanded of the repo
  referenced in the original videos.  Use this one.
+
+./critter_cam:
+ Python3 program for Raspberry Pi night "critter camera".  See its
+ README.
+ 
