@@ -1,6 +1,6 @@
 Python3 script cam.pay implements a critter camera on a Raspberry Pi.
 
-See YouTube video: XXXX
+See YouTube video: https://youtu.be/98HG3qutKg0
 
 Tested on Raspbian 12 (bookworm) and 13 (trixie).  Will fail on
 Raspbian 11
