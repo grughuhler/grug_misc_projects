@@ -1,7 +1,7 @@
 Python3 script cam.pay implements a critter camera on a Raspberry Pi.
 
-See YouTube videos: https://youtu.be/98HG3qutKg0 (cam.py)
-                    XXXXXX (not released yet) (vid_crit.py)
+See YouTube videos: https://youtu.be/98HG3qutKg0 (stills cam.py)
+                    https://youtu.be/oKp8FjOudYY (video vid_crit.py)
 
 Program cam.py
 --------------
