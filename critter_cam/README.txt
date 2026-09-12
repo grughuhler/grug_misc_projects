@@ -1,6 +1,10 @@
 Python3 script cam.pay implements a critter camera on a Raspberry Pi.
 
-See YouTube video: https://youtu.be/98HG3qutKg0
+See YouTube videos: https://youtu.be/98HG3qutKg0 (cam.py)
+                    XXXXXX (not released yet) (vid_crit.py)
+
+Program cam.py
+--------------
 
 Tested on Raspbian 12 (bookworm) and 13 (trixie).  Will fail on
 Raspbian 11
@@ -40,3 +44,30 @@ I decided to remove this section becuase the suggestion is somewhat dangerous
 due to the lack of LED current limiting in the Arducam design.  The approach
 described in the video is probably safer, but a completely different design
 for the IR illuminator would be my preference.
+
+Program vid_crit.py
+-------------------
+
+This program is similar to cam.py but takes video instead of still
+images.  When the TF-Luna detects a target within a distance range, it
+starts a 30 second video capture.
+
+If run with --day, the LEDs remain off and the IR filter is in place.
+
+The TF-Luna is disabled while video is being captured.  It starts
+again right after a video capture completes and can start another
+video.
+
+The LEDs will not run for more than two minutes.  After running for
+two minutes, there is a 1 minute cooldown period.
+
+The TF-Luna distance range to start a video is defined by constants in
+the code.
+
+For infrared video at night, the IMX462-based camera is far superior
+to the OVS5647-based camera.
+
+Use a Raspberry Pi Zero 2 or a more powerful Raspberry Pi.
+
+Program vid_crit.py has been tested only on Raspbian Trixie and only
+using the home-made IR illuminators described in the second video.
