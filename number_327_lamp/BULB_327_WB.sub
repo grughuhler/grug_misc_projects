@@ -1,0 +1,79 @@
+* Calibrated Electro-Thermal Model for #327 Lamp (Wide-Range / Wien Bridge)
+* Pins: 1, 2 (Filament terminals)
+*
+* ==============================================================================
+* MODEL EXPLANATION, ASSUMPTIONS, AND LIMITATIONS
+* ==============================================================================
+*
+* HOW IT WORKS:
+* 1. Instantaneous Power Normalization: B_pwr computes instantaneous electrical 
+*    power (V^2 / R) and divides it by Pnom (1.18 W) to generate a normalized heat
+*    drive signal. To prevent numerical division-by-zero during zero-crossings 
+*    and cold start-up, the denominator is bounded by max(Rcold, dynamic resistance).
+* 2. Two-Pole Thermal Mass Partitioning: Electrical heat input is split across two 
+*    uncoupled RC branches modeling distinct physical thermal reservoirs:
+*    - Fast pole (node T_fast): Models the microscopic thermal mass of the tungsten 
+*      filament wire using Tau_fast = 60 ms, scaled by K_fast = 0.72 (1 - K_slow).
+*    - Slow pole (node T_slow): Models the larger thermal mass of the molybdenum 
+*      support posts and glass mount using Tau_slow = 400 ms, scaled by K_slow = 0.35.
+*    With R_fast = 1 Ohm and R_slow = 1 Ohm, the nodes sum to an equilibrium
+*    voltage of V(T) = 1.0 V under continuous rated nominal power.
+* 3. Combined Clamped Thermal State: B_Tsum adds the two thermal states at node T
+*    and bounds the sum between 0.0 and 3.0 via limit() to eliminate solver runaway
+*    during aggressive start-up switching transients.
+* 4. Regularized Non-Linear Resistance: B_filament models dynamic terminal resistance
+*    using tungsten's radiation power law (P_exp = 0.32) blended with a 0.008 knee:
+*      R(T) = Rcold + (Rhot - Rcold) * 1.02 * V(T) / (V(T) + 0.03)^0.68
+*    - Near cold/zero power (V(T) < 0.008): The transfer function becomes linear 
+*      with V(T), eliminating the infinite mathematical derivative of pure power 
+*      laws and allowing complete thermal cool-down without artificial resistance latching.
+*    - At operational powers (V(T) > 0.1): It transitions into the 0.32 power law, 
+*      yielding accurate steady-state resistance and current across wide voltage 
+*      ranges (e.g., in low-level Wien bridge AGC operation as well as rated 28 V).
+*
+* ASSUMPTIONS:
+* 1. Dual Lumped-Parameter Heat Flow: Thermal dynamics are assumed to be accurately 
+*    represented by two discrete, uncoupled RC low-pass networks rather than 
+*    spatially distributed partial differential heat diffusion across the wire.
+* 2. Empirical Transition Knee: Conductive heat loss down the support posts is 
+*    assumed to overtake Stefan-Boltzmann radiation at approximately 3% of nominal 
+*    operating power (knee = 0.008).
+* 3. Constant Room Ambient: Rcold is hard-coded to 68 Ohms based on an ambient
+*    temperature of 25°C and does not dynamically track ambient room shifts.
+*
+* LIMITATIONS:
+* 1. Lamp-Specific Tuning: Calibrated specifically for the subminiature aircraft 
+*    #327 bulb (28 V, 1.18 W); other lamp types (e.g., 3 V or 5 V subminiatures) 
+*    exhibit different thermal mass ratios, conduction percentages, and time constants.
+* 2. Low-Frequency Thermal Modulation: The model treats the thermal nodes as 
+*    continuous low-pass filters. For oscillation frequencies above 1 kHz, filament 
+*    temperature remains constant across the cycle. At very low frequencies (< 20 Hz), 
+*    the filament can partially track instantaneous 2*f0 power ripple, causing 
+*    waveform distortion that a two-pole lumped approximation will slightly underestimate.
+* 3. Unidirectional Heat Coupling: Heat flows independently from power generation 
+*    into both poles; thermal back-conduction from heated posts back into the filament 
+*    during rapid power interruptions is not modeled.
+* ==============================================================================
+.SUBCKT BULB_327_WB 1 2 PARAMS: Vnom=28 Pnom=1.15 Rcold=65 Rhot=681 Tau_fast=60m Tau_slow=400m K_slow=0.35 P_exp=0.32
+.PARAM K_fast = {1.0 - K_slow}
+
+* Instantaneous power normalized to Pnom
+B_pwr P_norm 0 V = (V(1,2)**2 / max({Rcold}, (V(1,2) / (I(B_filament) + 1e-12)))) / {Pnom}
+
+* Fast thermal pole (filament wire mass)
+B_fast 0 T_fast I = V(P_norm) * {K_fast}
+C_fast T_fast 0 {Tau_fast} IC=0
+R_fast T_fast 0 1
+
+* Slow thermal pole (molybdenum support posts and glass mount)
+B_slow 0 T_slow I = V(P_norm) * {K_slow}
+C_slow T_slow 0 {Tau_slow} IC=0
+R_slow T_slow 0 1
+
+* Combined normalized thermal state (clamped to prevent convergence runaways)
+B_Tsum T 0 V = limit(V(T_fast) + V(T_slow), 0, 3)
+
+* Regularized dynamic resistance: linear near zero, 0.32 power law above knee
+* The value 0.008 is a hack obtained from comparison to a physical #327 lamp
+B_filament 1 2 I = V(1,2) / ({Rcold} + ({Rhot} - {Rcold}) * 1.02 * limit(V(T), 0, 3) / pow(limit(V(T), 0, 3) + 0.008, 0.68))
+.ENDS BULB_327_WB

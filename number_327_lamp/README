@@ -1,0 +1,16 @@
+LTSpice Model
+
+BULB_327_WB.sub is an LTSpice model of a #327 lamp, a 28V / 40mA
+incandescent bulb.  It is decribed in YouTube video:
+
+   XXXXX
+   
+To use it, go to your LTSpice projects directory (Documents/LTSpice on
+Windows), create directory lib/sub within it and place the .sub file
+there.  Then, open the .sub file in LTSPice and right click on the
+line that begins with "SUBCKT".  You should see a menu that allows you
+to create a symbol automatically for the lamp. Do so.
+
+Then, restart LTSpice and you should be able to place the lamp like
+any other component.  You should find it in lib/sub in the place
+component dialog.
