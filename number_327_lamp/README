@@ -1,9 +1,17 @@
+This directory contains a model of a #327 incandescent lamp for use
+with LTSpice.  It also contains a bulb stabilized Wien bridge oscillator
+that uses it.  The oscillator is based on the NE3332 op amp.
+
+See YouTube videos:
+
+   https://youtu.be/8FEQJIkZJYo
+and
+   https://youtu.be/HP5jtEx2Chc
+  
 LTSpice Model
 
 BULB_327_WB.sub is an LTSpice model of a #327 lamp, a 28V / 40mA
-incandescent bulb.  It is decribed in YouTube video:
-
-   https://youtu.be/8FEQJIkZJYo
+incandescent bulb.
    
 To use it, go to your LTSpice projects directory (Documents/LTSpice on
 Windows), create directory lib/sub within it and place the .sub file
@@ -14,3 +22,9 @@ to create a symbol automatically for the lamp. Do so.
 Then, restart LTSpice and you should be able to place the lamp like
 any other component.  You should find it in lib/sub in the place
 component dialog.
+
+Lamp Stabiized Wien Bridge Oscillator
+
+Place file NE5532.lib into lib and put ne5532_wien_osc_bulb_wb_simpler.asc
+into your LSpice project file (the one containing lib).  You can then
+open the latter and start an LTSpice simulation.
