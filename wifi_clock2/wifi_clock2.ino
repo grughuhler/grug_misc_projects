@@ -1019,11 +1019,13 @@ void setup()
 
   // Normal boot mode: load settings from Preferences flash
   if (!loadPreferences()) {
-    Serial.println("[Boot] Preferences missing or invalid! Displaying BAD in red.");
+    Serial.println("[Boot] Preferences missing or invalid! Displaying BAD for 2s then rebooting into Config Mode...");
     display_bad();
-    while (true) {
-      delay(1000);
-    }
+    delay(2000);
+    preferences.begin("wifi_clock", false);
+    preferences.putBool("force_config", true);
+    preferences.end();
+    ESP.restart();
   }
 
   display_hi();
