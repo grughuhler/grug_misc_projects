@@ -1,0 +1,44 @@
+* DIY Vactrol Model: Green LED + GL5516 CdS Photoresistor
+* Calibrated from bench measurement data (56uA to 15.2mA)
+* Pins:
+*   A   = LED Anode
+*   K   = LED Cathode
+*   R1  = Photoresistor Terminal 1
+*   R2  = Photoresistor Terminal 2
+
+.subckt DIY_VACTROL A K R1 R2
+* -------------------------------------------------------------
+* 1. Green LED Stage (Calibrated to 2.49V @ 2mA, 2.565V @ 3.06mA)
+* -------------------------------------------------------------
+D_LED A N_sense D_GREEN
+Vsense N_sense K 0V
+.model D_GREEN D(Is=1.25e-13 N=4.0 Rs=30 Bv=5 Ibv=10u)
+
+* Input-to-output parasitic coupling capacitance
+C_iso A R1 0.8p
+
+* -------------------------------------------------------------
+* 2. Current Sensing & Multi-Pole Dynamic Filter
+* -------------------------------------------------------------
+B_raw raw 0 V = max(0, I(Vsense))
+
+* Primary asymmetric response (Ton = 20ms, Toff = 100ms)
+G_lag 0 lag1 VALUE = { if(V(raw) > V(lag1), (V(raw) - V(lag1)) / Ton, (V(raw) - V(lag1)) / Toff) }
+C_lag lag1 0 1 IC=0
+R_bleed lag1 0 1G
+
+* Secondary high-frequency CdS diffusion pole (suppresses 2*f0 ripple)
+R_pole lag1 lag 10k
+C_pole lag 0 20n
+
+* -------------------------------------------------------------
+* 3. Photoresistor Transfer Characteristic
+* -------------------------------------------------------------
+* Evaluates R(I) using mA scaling: R = 190 + 183.3/I_mA + 325.7/sqrt(I_mA)
+* Clamped between Rmin (190 ohms) and Rdark (1.5 Meg)
+R_cell R1 R2 R = limit( Rmin + (183.3 / max(1u, V(lag)*1k)) + (325.7 / sqrt(max(1u, V(lag)*1k))), Rmin, Rdark )
+C_cell R1 R2 4p
+
+* Model parameters
+.param Ton=20m Toff=100m Rmin=190 Rdark=1.5Meg
+.ends DIY_VACTROL
