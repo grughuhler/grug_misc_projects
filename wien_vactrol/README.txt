@@ -1,8 +1,8 @@
 This directory contains an LTspice circuit for a Wien bridge
 oscillator that is stabilized by a home-made vactrol, an LED paired
-with a photoresistor.
+with a photoresistor.  Some needed components are in directory lib.
 
-See YouTube video: XXXXX
+See YouTube video: https://youtu.be/-hnqCWbiWcY
 
 ne5532_diy_ldr.asc - Wien bridge circuit
 
