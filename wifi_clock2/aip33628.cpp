@@ -25,7 +25,8 @@ static spi_device_handle_t spi_handle = NULL;
  * transmission.
  */
 
-static void init_spi(void) {
+static void init_spi(void)
+{
   if (spi_handle != NULL) return;
 
   spi_bus_config_t buscfg = {};

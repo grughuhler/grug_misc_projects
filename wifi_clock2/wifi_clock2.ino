@@ -4,13 +4,17 @@
 #include <sys/time.h>
 #include <esp_sntp.h>
 #include <Preferences.h>
-#include <DNSServer.h>
-#include <WebServer.h>
-#include <ESPmDNS.h>
-#include <vector>
 #include "ds1302.h"
 #include "aip33628.h"
+#include "config_mode.h"
 
+// ESP32 is a 3.3V device with 3.3V signaling
+#define VCC_ESP32 3.3f
+
+// There are 33 RGB LEDs on the clock board.  Each RGB LED contains three
+// LEDs: a blue one, a green one, and a red one.  Below, there is a table
+// of all of the RGB LEDs.  These are offsets that select the color in LED
+// APIs.
 #define BLUE 0
 #define GREEN 1
 #define RED 2
@@ -18,18 +22,20 @@
 // ESP32-C3 SuperMini Pin Definitions for HU-058 Board
 
 #define PHOTO_RES_PIN       0 // ADC input from photoresistor
+#define NTC_PIN             1 // ADC input from thermistor
+#define BUZZER_PIN         10 // Output for buzzer
 
-#define AIP33628_1_CLK_PIN  1 // Output to AIP33628
-#define AIP33628_1_DATA_PIN 2 // Output to AIP33628
-#define AIP33628_2_CLK_PIN  3 // Output to AIP33628
-#define AIP33628_2_DATA_PIN 4 // Output to AIP33628
+#define AIP33628_1_CLK_PIN  5 // Output to 1st AIP33628
+#define AIP33628_1_DATA_PIN 2 // Output to 1st AIP33628
+#define AIP33628_2_CLK_PIN  4 // Output to 2nd AIP33628
+#define AIP33628_2_DATA_PIN 3 // Output to 2nd AIP33628
 
-#define DS1302_CE_PIN  5  // Output to DS1302
-#define DS1302_CLK_PIN 6  // Output to DS1302
-#define DS1302_DAT_PIN 7  // Bi-directional!
+#define DS1302_CE_PIN  6  // Output to DS1302
+#define DS1302_CLK_PIN 9  // Output to DS1302
+#define DS1302_DAT_PIN 7  // Bi-directional DS1302 data pin.
 
-#define BUTTON1_PIN        20 // Input to ESP32 (internal pullup)
-#define BUTTON2_PIN        21 // Input to ESP32 (internal pullup)
+#define BUTTON1_PIN 21 // Input to ESP32 (internal pullup)
+#define BUTTON2_PIN 20 // Input to ESP32 (internal pullup)
 
 // base values for display_digit
 #define MIN_1S 0
@@ -43,6 +49,15 @@
 #define DEGREE 32
 #define AM_IND 28
 
+#define MODE_TIME 0
+#define MODE_TEMPERATURE 1
+#define MODE_BLANK 2
+
+uint8_t mode = MODE_TIME;
+bool in_config_mode = false;
+
+int16_t t_fah = 0; // Current temperature
+
 // Preferences & Wi-Fi Settings
 Preferences preferences;
 String ssid = "";
@@ -51,26 +66,11 @@ String timeZone = "CST6CDT,M3.2.0,M11.1.0";
 bool dst_enabled = true;
 bool use_24h = false;
 uint8_t clock_color = GREEN;
-bool display_on = true;
-
-// Web Server & Captive Portal objects for Config Mode
-DNSServer dnsServer;
-WebServer server(80);
-
-String stored_ssid = "";
-String stored_password = "";
-String stored_timezone = "CST6CDT,M3.2.0,M11.1.0";
-bool stored_use_24h = false;
-bool stored_dst_enable = true;
 
 // NTP Servers
 bool use_default_ntp = true;
 String active_ntp_server1 = "pool.ntp.org";
 String active_ntp_server2 = "time.nist.gov";
-
-bool stored_use_default_ntp = true;
-String stored_ntp_server1 = "pool.ntp.org";
-String stored_ntp_server2 = "time.nist.gov";
 
 // Global State & Alarms
 bool ntp_time_valid = false;
@@ -81,11 +81,24 @@ time_t next_minute_print_epoch = 0;
 
 volatile bool sntpSyncTriggered = false;
 
-// This table gives a name (index) to every RGB LED on the clock board.
+// Non-blocking NTP Sync State Machine
+enum NtpSyncState {
+  NTP_STATE_IDLE,
+  NTP_STATE_CONNECTING_WIFI,
+  NTP_STATE_WAIT_BEFORE_SNTP,
+  NTP_STATE_WAITING_SNTP
+};
+
+NtpSyncState ntp_sync_state = NTP_STATE_IDLE;
+unsigned long ntp_state_start_millis = 0;
+unsigned long ntp_last_dot_millis = 0;
+
+// This table lists all 33 RGB LEDs on the clock board and gives
+// information on how to access them.
 const struct {
-  uint8_t driver;
-  uint8_t phase; // COM pair sequence index
-  uint8_t segment;
+  uint8_t driver;  // Which AIP33628 (0 or 1)
+  uint8_t phase;   // COM pair sequence index
+  uint8_t segment; // Which segment (gives blue lED)
 } led_list[33] = {
   {1, 1, 13},
   {1, 1, 10},
@@ -122,24 +135,45 @@ const struct {
   {1, 1, 1}
 };
 
-// This table lists the LEDs needed to form hex characters 0 to F.
-const uint8_t hex_digits[16][9] = {
-  {0, 1, 2, 3, 4, 5, 255, 0},
-  {1, 2, 255, 0, 0, 0, 0, 0},
-  {0, 1, 6, 4, 3, 255, 0, 0},
+// This table lists the LEDs needed to form 0-9 and A-Z
+// as well as can be...
+const uint8_t numbers_letters[36][8] = {
+  {0, 1, 2, 3, 4, 5, 255, 0}, // 0
+  {1, 2, 255, 0, 0, 0, 0, 0}, // 1
+  {0, 1, 6, 4, 3, 255, 0, 0}, // 2
   {0, 1, 2, 3, 6, 255, 0, 0}, // 3
-  {5, 1, 6, 2, 255, 0, 0, 0},
-  {0, 5, 6, 2, 3, 255, 0, 0},
-  {0, 5, 4, 3, 2, 6, 255, 0},
+  {5, 1, 6, 2, 255, 0, 0, 0}, // 4
+  {0, 5, 6, 2, 3, 255, 0, 0}, // 5
+  {0, 5, 4, 3, 2, 6, 255, 0}, // 6
   {0, 1, 2, 255, 0, 0, 0, 0}, // 7
-  {0, 1, 2, 3, 4, 5, 6, 255},
-  {6, 5, 0, 1, 2, 3, 255, 0},
+  {0, 1, 2, 3, 4, 5, 6, 255}, // 8
+  {6, 5, 0, 1, 2, 3, 255, 0}, // 9
   {0, 5, 1, 6, 4, 2, 255, 0}, // A (10)
   {5, 4, 3, 2, 6, 255, 0, 0}, // B (11)
   {0, 5, 4, 3, 255, 0, 0, 0}, // C (12)
   {1, 2, 3, 4, 6, 255, 0, 0}, // D (13)
   {0, 5, 4, 3, 6, 255, 0, 0}, // E (14)
-  {0, 5, 6, 4, 255, 0, 0, 0}  // F (15)
+  {0, 5, 6, 4, 255, 0, 0, 0}, // F (15)
+  {0, 1, 5, 6, 2, 3, 255, 0}, // g (16)
+  {1, 2, 4, 5, 6, 255, 0, 0}, // H
+  {1, 2, 255, 0, 0, 0, 0, 0}, // I
+  {1, 2, 3, 4, 255, 0, 0, 0}, // J
+  {4, 5, 6, 255, 0, 0, 0, 0}, // K (poor)
+  {3, 4, 5, 255, 0, 0, 0, 0}, // L
+  {0, 1, 2, 4, 5, 255, 0, 0}, // M (poor)
+  {2, 4, 6, 255, 0, 0, 0, 0}, // n
+  {0, 1, 2, 3, 4, 5, 255, 0}, // O
+  {0, 1, 6, 4, 5, 255, 0, 0}, // P
+  {0, 1, 5, 6, 2, 255, 0, 0}, // q
+  {6, 4, 255, 0, 0, 0, 0, 0}, // r
+  {0, 5, 6, 2, 3, 255, 0, 0}, // S
+  {0, 1, 2, 255, 0, 0, 0, 0}, // t (poor)
+  {1, 2, 3, 4, 5, 255, 0, 0}, // U
+  {2, 3, 4, 255, 0, 0, 0, 0}, // v (poor)
+  {2, 3, 4, 6, 255, 0, 0, 0}, // w (poor)
+  {0, 1, 5, 6, 255, 0, 0, 0}, // x (poor)
+  {1, 5, 6, 2, 255, 0, 0, 0}, // Y (poor)
+  {0, 1, 6, 4, 3, 255, 0, 0}  // Z
 };
 
 // Display a digit 0-F on one of the 4 7-segment blocks.
@@ -148,12 +182,21 @@ void display_digit(uint8_t base, uint8_t digit, uint8_t color)
   int i = 0;
   uint8_t c;
 
-  digit &= 0xf;
-  while ((c = hex_digits[digit][i++]) != 255) {
+  if (digit >= sizeof(numbers_letters)/sizeof(numbers_letters[0]))
+     digit = 0;
+  while ((c = numbers_letters[digit][i++]) != 255) {
     aip33628_ena_led(led_list[c + base].driver,
                      led_list[c + base].phase,
                      led_list[c + base].segment + color);
   }
+}
+
+// Display "-" in position given by base
+void display_minus(uint8_t base, uint8_t color)
+{
+  aip33628_ena_led(led_list[6 + base].driver,
+                   led_list[6 + base].phase,
+                   led_list[6 + base].segment + color);
 }
 
 // Enable an LED that is not part of a 7-segment character.
@@ -195,48 +238,51 @@ void display_bad(void)
   display_digit(MIN_1S, 13, RED);  // D
 }
 
-// Displays "C0F6" on the LEDs in blue
-void display_c0f6(void)
+
+#define LETTER(c) (c - 'A' + 10)
+
+// Displays "COnF" on the LEDs in blue
+void display_conf(void)
 {
   aip33628_clear_all();
-  display_digit(HOUR_10S, 12, BLUE); // C
-  display_digit(HOUR_1S, 0, BLUE);   // 0
-  display_digit(MIN_10S, 15, BLUE);  // F
-  display_digit(MIN_1S, 6, BLUE);    // 6
+  display_digit(HOUR_10S, LETTER('C'), BLUE);
+  display_digit(HOUR_1S, LETTER('O'), BLUE);
+  display_digit(MIN_10S, LETTER('N'), BLUE);
+  display_digit(MIN_1S, LETTER('F'), BLUE);
 }
 
 // Load configuration from ESP32 Preferences
 bool loadPreferences(void)
 {
   preferences.begin("wifi_clock", true); // read-only
-  stored_ssid = preferences.getString("ssid", "");
-  stored_password = preferences.getString("password", "");
-  stored_timezone = preferences.getString("timezone", "");
-  stored_use_24h = preferences.getBool("use_24h", false);
-  stored_dst_enable = preferences.getBool("dst", true);
+  String saved_ssid = preferences.getString("ssid", "");
+  String saved_password = preferences.getString("password", "");
+  String saved_timezone = preferences.getString("timezone", "");
+  bool saved_use_24h = preferences.getBool("use_24h", false);
+  bool saved_dst_enable = preferences.getBool("dst", true);
   clock_color = preferences.getUChar("color", GREEN);
-  stored_use_default_ntp = preferences.getBool("ntp_default", true);
-  stored_ntp_server1 = preferences.getString("ntp_server1", "pool.ntp.org");
-  stored_ntp_server2 = preferences.getString("ntp_server2", "time.nist.gov");
+  bool saved_use_default_ntp = preferences.getBool("ntp_default", true);
+  String saved_ntp_server1 = preferences.getString("ntp_server1", "pool.ntp.org");
+  String saved_ntp_server2 = preferences.getString("ntp_server2", "time.nist.gov");
   preferences.end();
 
-  if (stored_ssid.length() == 0 || stored_timezone.length() == 0) {
+  if (saved_ssid.length() == 0 || saved_timezone.length() == 0) {
     return false;
   }
 
-  ssid = stored_ssid;
-  password = stored_password;
-  timeZone = stored_timezone;
-  use_24h = stored_use_24h;
-  dst_enabled = stored_dst_enable;
-  use_default_ntp = stored_use_default_ntp;
+  ssid = saved_ssid;
+  password = saved_password;
+  timeZone = saved_timezone;
+  use_24h = saved_use_24h;
+  dst_enabled = saved_dst_enable;
+  use_default_ntp = saved_use_default_ntp;
 
   if (use_default_ntp) {
     active_ntp_server1 = "pool.ntp.org";
     active_ntp_server2 = "time.nist.gov";
   } else {
-    active_ntp_server1 = stored_ntp_server1;
-    active_ntp_server2 = stored_ntp_server2;
+    active_ntp_server1 = saved_ntp_server1;
+    active_ntp_server2 = saved_ntp_server2;
   }
 
   return true;
@@ -309,7 +355,7 @@ void printScheduledTime(const char* label, time_t epoch)
 bool get_local_time(uint8_t *hours, uint8_t *minutes, bool *is_am)
 {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
+  if (!getLocalTime(&timeinfo, 0)) {
     return false;
   }
 
@@ -350,7 +396,7 @@ void printLocalTime()
   }
 
   struct tm timeinfo;
-  getLocalTime(&timeinfo);
+  getLocalTime(&timeinfo, 0);
 
   char dateStr[64];
   char tzStr[16];
@@ -374,11 +420,6 @@ void printLocalTime()
                   ntp_time_valid ? "true" : "false");
   }
 
-  if (!display_on) {
-    aip33628_clear_all();
-    return;
-  }
-
   aip33628_clear_all();
   display_other(COLON, clock_color);
   display_digit(MIN_1S, minutes % 10, clock_color);
@@ -391,365 +432,7 @@ void printLocalTime()
 }
 
 // ===========================================================
-// Web Server & Captive Portal Handlers
-// ===========================================================
-
-void handleRoot()
-{
-  String html = R"rawliteral(<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clock Configuration</title>
-<style>
-body { font-family: Arial, sans-serif; margin: 20px; background: #f0f2f5; color: #333; }
-.card { max-width: 420px; margin: auto; background: white; padding: 24px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-h2 { margin-top: 0; color: #1a73e8; text-align: center; }
-label { display: block; margin-top: 14px; font-weight: bold; }
-input[type=text], select { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
-.row { display: flex; gap: 8px; margin-top: 4px; }
-.btn { background: #1a73e8; color: white; border: none; padding: 10px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; }
-.btn:hover { background: #1557b0; }
-.btn-cancel { background: #757575; }
-.btn-cancel:hover { background: #5a5a5a; }
-.btn-scan { background: #34a853; width: 100%; margin-top: 6px; }
-.checkbox-container { display: flex; align-items: center; margin-top: 14px; }
-.checkbox-container input { margin-right: 8px; width: 18px; height: 18px; }
-.actions { margin-top: 24px; display: flex; justify-content: space-between; }
-#ap-list { display: none; margin-top: 8px; border: 1px solid #ccc; max-height: 150px; overflow-y: auto; background: #fafafa; border-radius: 4px; }
-.ap-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
-.ap-item:hover { background: #e8f0fe; }
-</style>
-</head>
-<body>
-<div class="card">
-<h2>Clock Setup</h2>
-<form action="/save" method="POST">
-<label for="ssid">Wi-Fi SSID:</label>
-<input type="text" id="ssid" name="ssid" required value="%SAVED_SSID%">
-<button type="button" class="btn btn-scan" onclick="scanWifi()">Choose from list</button>
-<div id="ap-list"></div>
-
-<label for="password">Wi-Fi Password:</label>
-<input type="text" id="password" name="password" placeholder="Enter new password (leave blank to keep current)" %PWD_DISABLED%>
-<div class="checkbox-container" style="margin-top:6px;">
-  <input type="checkbox" id="open_net" name="open_net" value="1" %OPEN_NET_CHECKED% onchange="togglePasswordInput(this)">
-  <label for="open_net" style="margin-top:0;font-weight:normal">No password (open)</label>
-</div>
-
-<label for="timezone">Timezone:</label>
-<select id="timezone" name="timezone">
-  <optgroup label="North America">
-    <option value="HST10">Hawaii (UTC-10)</option>
-    <option value="AKST9AKDT,M3.2.0,M11.1.0">Alaska (UTC-9)</option>
-    <option value="PST8PDT,M3.2.0,M11.1.0">Pacific Time - US & Canada (UTC-8)</option>
-    <option value="MST7">Mountain Time - Arizona (UTC-7, No DST)</option>
-    <option value="MST7MDT,M3.2.0,M11.1.0">Mountain Time - US & Canada (UTC-7)</option>
-    <option value="CST6CDT,M3.2.0,M11.1.0">Central Time - US & Canada (UTC-6)</option>
-    <option value="EST5EDT,M3.2.0,M11.1.0">Eastern Time - US & Canada (UTC-5)</option>
-    <option value="AST4ADT,M3.2.0,M11.1.0">Atlantic Time - Canada (UTC-4)</option>
-    <option value="NST3:30NDT,M3.2.0,M11.1.0">Newfoundland (UTC-3:30)</option>
-  </optgroup>
-  <optgroup label="Central & South America">
-    <option value="CST6">Central America / Mexico City (UTC-6)</option>
-    <option value="EST5">Bogota, Lima, Quito (UTC-5)</option>
-    <option value="CLT4CLST,M9.1.0/24,M4.1.0/24">Santiago, Chile (UTC-4)</option>
-    <option value="BRT3">Buenos Aires, Brasilia (UTC-3)</option>
-  </optgroup>
-  <optgroup label="Europe & UTC">
-    <option value="UTC0">UTC / GMT (UTC+0)</option>
-    <option value="GMT0BST,M3.5.0/1,M10.5.0/2">London, Dublin, Lisbon (UTC+0)</option>
-    <option value="CET-1CEST,M3.5.0,M10.5.0/3">Central Europe - Paris, Berlin, Rome, Madrid (UTC+1)</option>
-    <option value="EET-2EEST,M3.5.0/3,M10.5.0/4">Eastern Europe - Athens, Helsinki, Kyiv, Cairo (UTC+2)</option>
-    <option value="MSK-3">Moscow, Istanbul, Riyadh, Nairobi (UTC+3)</option>
-  </optgroup>
-  <optgroup label="Africa & Middle East">
-    <option value="SAST-2">Johannesburg, Harare (UTC+2)</option>
-    <option value="AST-3">Riyadh, Kuwait, Baghdad (UTC+3)</option>
-    <option value="IRST-3:30">Tehran (UTC+3:30)</option>
-    <option value="GST-4">Dubai, Abu Dhabi, Muscat (UTC+4)</option>
-  </optgroup>
-  <optgroup label="Asia">
-    <option value="PKT-5">Karachi, Tashkent (UTC+5)</option>
-    <option value="IST-5:30">India - New Delhi, Mumbai, Kolkata (UTC+5:30)</option>
-    <option value="NPT-5:45">Nepal - Kathmandu (UTC+5:45)</option>
-    <option value="BST-6">Dhaka, Almaty (UTC+6)</option>
-    <option value="MMT-6:30">Yangon, Myanmar (UTC+6:30)</option>
-    <option value="ICT-7">Bangkok, Hanoi, Jakarta (UTC+7)</option>
-    <option value="CST-8">China, Singapore, Hong Kong, Taipei, Perth (UTC+8)</option>
-    <option value="JST-9">Tokyo, Seoul (UTC+9)</option>
-  </optgroup>
-  <optgroup label="Australia & Pacific">
-    <option value="AWST-8">Perth - Western Australia (UTC+8)</option>
-    <option value="ACST-9:30ACDT,M10.1.0,M4.1.0/3">Adelaide, Darwin (UTC+9:30)</option>
-    <option value="AEST-10">Brisbane (UTC+10, No DST)</option>
-    <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Sydney, Melbourne, Canberra (UTC+10)</option>
-    <option value="NZST-12NZDT,M9.5.0,M4.1.0/3">Auckland, Wellington (UTC+12)</option>
-  </optgroup>
-</select>
-
-<div class="checkbox-container">
-  <input type="checkbox" id="dst" name="dst" value="1" %DST_CHECKED%>
-  <label for="dst" style="margin-top:0;font-weight:normal">Automatically adjust for Daylight Saving Time</label>
-</div>
-
-<label for="time_format">Time Format:</label>
-<select id="time_format" name="time_format">
-  <option value="12">12-hour (with AM indicator)</option>
-  <option value="24">24-hour</option>
-</select>
-
-<div class="checkbox-container">
-  <input type="checkbox" id="ntp_default" name="ntp_default" value="1" %NTP_DEFAULT_CHECKED% onchange="toggleNtpInputs(this)">
-  <label for="ntp_default" style="margin-top:0;font-weight:normal">Use default NTP servers</label>
-</div>
-
-<label for="ntp_server1">Primary NTP Server:</label>
-<input type="text" id="ntp_server1" name="ntp_server1" value="%NTP_SERVER1%" %NTP_DISABLED%>
-
-<label for="ntp_server2">Secondary NTP Server:</label>
-<input type="text" id="ntp_server2" name="ntp_server2" value="%NTP_SERVER2%" %NTP_DISABLED%>
-
-<label for="color">LED Display Color:</label>
-<select id="color" name="color">
-  <option value="1" %COLOR_GREEN%>Green</option>
-  <option value="2" %COLOR_RED%>Red</option>
-  <option value="0" %COLOR_BLUE%>Blue</option>
-</select>
-
-<div class="actions">
-  <button type="button" class="btn btn-cancel" onclick="window.location.href='/cancel'">Cancel</button>
-  <button type="submit" class="btn">Save & Reboot</button>
-</div>
-</form>
-</div>
-<script>
-function togglePasswordInput(cb) {
-  var pwdInput = document.getElementById('password');
-  if (cb.checked) {
-    pwdInput.value = '';
-    pwdInput.disabled = true;
-  } else {
-    pwdInput.disabled = false;
-  }
-}
-function toggleNtpInputs(cb) {
-  var s1 = document.getElementById('ntp_server1');
-  var s2 = document.getElementById('ntp_server2');
-  if (cb.checked) {
-    s1.value = 'pool.ntp.org';
-    s2.value = 'time.nist.gov';
-    s1.disabled = true;
-    s2.disabled = true;
-  } else {
-    s1.disabled = false;
-    s2.disabled = false;
-  }
-}
-window.addEventListener('DOMContentLoaded', function() {
-  var tzSelect = document.getElementById('timezone');
-  if (tzSelect) {
-    tzSelect.value = "%SAVED_TZ%";
-  }
-  var tfSelect = document.getElementById('time_format');
-  if (tfSelect) {
-    tfSelect.value = "%SAVED_TF%";
-  }
-  var cb = document.getElementById('open_net');
-  if (cb) togglePasswordInput(cb);
-  var ntpCb = document.getElementById('ntp_default');
-  if (ntpCb) toggleNtpInputs(ntpCb);
-});
-function scanWifi() {
-  var list = document.getElementById('ap-list');
-  list.style.display = 'block';
-  list.innerHTML = '<div class="ap-item">Scanning...</div>';
-  fetch('/scan').then(r => r.json()).then(ssids => {
-    if (ssids.length === 0) {
-      list.innerHTML = '<div class="ap-item">No networks found</div>';
-      return;
-    }
-    list.innerHTML = '';
-    ssids.forEach(s => {
-      var d = document.createElement('div');
-      d.className = 'ap-item';
-      d.innerText = s;
-      d.onclick = function() {
-        document.getElementById('ssid').value = s;
-        list.style.display = 'none';
-      };
-      list.appendChild(d);
-    });
-  }).catch(e => {
-    list.innerHTML = '<div class="ap-item">Scan failed</div>';
-  });
-}
-</script>
-</body>
-</html>)rawliteral";
-
-  bool isCurrentlyOpen = (stored_password.length() == 0 && stored_ssid.length() > 0);
-  html.replace("%OPEN_NET_CHECKED%", (isCurrentlyOpen ? "checked" : ""));
-  html.replace("%PWD_DISABLED%", (isCurrentlyOpen ? "disabled" : ""));
-
-  html.replace("%SAVED_SSID%", stored_ssid);
-  html.replace("%SAVED_TZ%", stored_timezone);
-  html.replace("%SAVED_TF%", stored_use_24h ? "24" : "12");
-  html.replace("%DST_CHECKED%", (stored_dst_enable ? "checked" : ""));
-  html.replace("%NTP_DEFAULT_CHECKED%", (stored_use_default_ntp ? "checked" : ""));
-  html.replace("%NTP_SERVER1%", stored_ntp_server1);
-  html.replace("%NTP_SERVER2%", stored_ntp_server2);
-  html.replace("%NTP_DISABLED%", (stored_use_default_ntp ? "disabled" : ""));
-
-  html.replace("%COLOR_GREEN%", (clock_color == GREEN ? "selected" : ""));
-  html.replace("%COLOR_RED%", (clock_color == RED ? "selected" : ""));
-  html.replace("%COLOR_BLUE%", (clock_color == BLUE ? "selected" : ""));
-
-  server.send(200, "text/html", html);
-}
-
-void handleScan()
-{
-  int n = WiFi.scanNetworks();
-  String json = "[";
-  if (n > 0) {
-    std::vector<String> uniqueSsids;
-    for (int i = 0; i < n; ++i) {
-      String s = WiFi.SSID(i);
-      if (s.length() > 0) {
-        bool dup = false;
-        for (const auto& existing : uniqueSsids) {
-          if (existing == s) { dup = true; break; }
-        }
-        if (!dup) uniqueSsids.push_back(s);
-      }
-    }
-    for (size_t i = 0; i < uniqueSsids.size(); ++i) {
-      json += "\"" + uniqueSsids[i] + "\"";
-      if (i + 1 < uniqueSsids.size()) json += ",";
-    }
-  }
-  json += "]";
-  WiFi.scanDelete();
-  server.send(200, "application/json", json);
-}
-
-void handleSave()
-{
-  if (server.hasArg("ssid")) {
-    String newSsid = server.arg("ssid");
-    String newPassword = server.arg("password");
-    String newTz = server.arg("timezone");
-    bool new24h = (server.arg("time_format") == "24");
-    bool newDst = server.hasArg("dst");
-    bool isOpenNet = server.hasArg("open_net");
-    uint8_t newColor = (uint8_t)server.arg("color").toInt();
-
-    bool newNtpDefault = server.hasArg("ntp_default");
-    String newNtp1 = server.arg("ntp_server1");
-    String newNtp2 = server.arg("ntp_server2");
-    if (newNtpDefault || newNtp1.length() == 0) {
-      newNtp1 = "pool.ntp.org";
-    }
-    if (newNtpDefault || newNtp2.length() == 0) {
-      newNtp2 = "time.nist.gov";
-    }
-
-    preferences.begin("wifi_clock", false); // read-write
-    preferences.putString("ssid", newSsid);
-
-    if (isOpenNet) {
-      preferences.putString("password", "");
-    } else if (newPassword.length() > 0) {
-      preferences.putString("password", newPassword);
-    }
-
-    preferences.putString("timezone", newTz);
-    preferences.putBool("use_24h", new24h);
-    preferences.putBool("dst", newDst);
-    preferences.putUChar("color", newColor);
-    preferences.putBool("ntp_default", newNtpDefault);
-    preferences.putString("ntp_server1", newNtp1);
-    preferences.putString("ntp_server2", newNtp2);
-    preferences.end();
-
-    Serial.println("[Config] Preferences saved successfully. Rebooting...");
-    String html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body style=\"font-family:sans-serif;text-align:center;margin-top:50px;\"><h2>Settings saved and clock rebooted!</h2><p>You must now rejoin your normal WiFi network</p></body></html>";
-    server.send(200, "text/html", html);
-    delay(1000);
-    ESP.restart();
-  } else {
-    server.send(400, "text/plain", "Bad Request");
-  }
-}
-
-void handleCancel()
-{
-  Serial.println("[Config] Configuration cancelled. Rebooting...");
-  String html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body style=\"font-family:sans-serif;text-align:center;margin-top:50px;\"><h2>Cancelled</h2><p>Rebooting clock...</p></body></html>";
-  server.send(200, "text/html", html);
-  delay(1000);
-  ESP.restart();
-}
-
-void handleNotFound()
-{
-  server.sendHeader("Location", "http://192.168.199.1/", true);
-  server.send(302, "text/plain", "");
-}
-
-void runConfigMode()
-{
-  Serial.println("[Config] Entering Configuration Mode (AP: clock0, IP: 192.168.199.1)...");
-
-  preferences.begin("wifi_clock", true);
-  stored_ssid = preferences.getString("ssid", "");
-  stored_password = preferences.getString("password", "");
-  stored_timezone = preferences.getString("timezone", "CST6CDT,M3.2.0,M11.1.0");
-  stored_use_24h = preferences.getBool("use_24h", false);
-  stored_dst_enable = preferences.getBool("dst", true);
-  clock_color = preferences.getUChar("color", GREEN);
-  stored_use_default_ntp = preferences.getBool("ntp_default", true);
-  stored_ntp_server1 = preferences.getString("ntp_server1", "pool.ntp.org");
-  stored_ntp_server2 = preferences.getString("ntp_server2", "time.nist.gov");
-  preferences.end();
-
-  display_c0f6();
-
-  WiFi.mode(WIFI_AP_STA);
-  IPAddress local_ip(192, 168, 199, 1);
-  IPAddress gateway(192, 168, 199, 1);
-  IPAddress subnet(255, 255, 255, 0);
-  WiFi.softAPConfig(local_ip, gateway, subnet);
-  WiFi.softAP("clock0");
-
-  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  dnsServer.start(53, "*", local_ip);
-
-  if (MDNS.begin("clock")) {
-    MDNS.addService("http", "tcp", 80);
-    Serial.println("[Config] mDNS responder started for 'clock.local'");
-  }
-
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/scan", HTTP_GET, handleScan);
-  server.on("/save", HTTP_POST, handleSave);
-  server.on("/cancel", HTTP_GET, handleCancel);
-  server.on("/cancel", HTTP_POST, handleCancel);
-  server.onNotFound(handleNotFound);
-
-  server.begin();
-  Serial.println("[Config] Web server started.");
-
-  while (true) {
-    dnsServer.processNextRequest();
-    server.handleClient();
-    delay(5);
-  }
-}
-
-// ===========================================================
-// System Time & Sync Logic
+// System Time & Non-Blocking NTP Sync Logic
 // ===========================================================
 
 bool syncSystemFromRtc()
@@ -792,47 +475,31 @@ void stopWiFi()
   WiFi.mode(WIFI_OFF);
 }
 
-bool performNtpSync()
+void startNtpSync(void)
 {
   Serial.println("\n[Radio] Powering on Wi-Fi for NTP sync...");
   sntpSyncTriggered = false;
 
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  WiFi.setHostname("clock0");
+  WiFi.setHostname("clock1");
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 
   WiFi.begin(ssid.c_str(), password.c_str());
 
-  unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt < 18000)) {
-    delay(250);
-    Serial.print(".");
-  }
+  ntp_state_start_millis = millis();
+  ntp_last_dot_millis = ntp_state_start_millis;
+  ntp_sync_state = NTP_STATE_CONNECTING_WIFI;
+}
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[Radio] Wi-Fi connection failed. Keeping current system time.");
-    stopWiFi();
-    updateNtpTimeValidStatus(time(NULL));
-    return false;
-  }
-  Serial.printf("\n[Radio] Connected (RSSI: %d dBm).\n", WiFi.RSSI());
-
-  delay(500);
-
-  sntp_restart();
-
-  startAttempt = millis();
-  while (!sntpSyncTriggered && (millis() - startAttempt < 15000)) {
-    delay(100);
-  }
-
+static void finishNtpSync(bool syncOk)
+{
   stopWiFi();
 
   time_t now = time(NULL);
 
-  if (sntpSyncTriggered) {
+  if (syncOk) {
     last_successful_ntp_epoch = now;
     updateNtpTimeValidStatus(now);
 
@@ -861,11 +528,94 @@ bool performNtpSync()
         Serial.println("[RTC] Discrepancy <= 10s. Update skipped.");
       }
     }
-    return true;
+
+    Serial.print("[NTP] Synchronized Local Time: ");
+    if (mode == MODE_TIME) {
+      printLocalTime();
+    } else {
+      Serial.println("(display in non-time mode)");
+    }
+
+    next_minute_print_epoch = (now / 60 + 1) * 60;
+    printScheduledTime("[Schedule] Next minute print alarm:",
+                       next_minute_print_epoch);
   } else {
-    Serial.println("[NTP] Sync timed out.");
     updateNtpTimeValidStatus(now);
-    return false;
+  }
+
+  next_sync_epoch = calculateNextSyncEpoch(now, syncOk);
+  printScheduledTime("[Schedule] Next NTP sync alarm:", next_sync_epoch);
+  ntp_sync_state = NTP_STATE_IDLE;
+}
+
+void process_ntp_sync(time_t now)
+{
+  unsigned long curMillis = millis();
+
+  switch (ntp_sync_state) {
+    case NTP_STATE_IDLE:
+      if (next_sync_epoch > 0 && now >= next_sync_epoch) {
+        startNtpSync();
+      }
+      break;
+
+    case NTP_STATE_CONNECTING_WIFI:
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[Radio] Connected (RSSI: %d dBm).\n", WiFi.RSSI());
+        ntp_state_start_millis = curMillis;
+        ntp_sync_state = NTP_STATE_WAIT_BEFORE_SNTP;
+      } else if (curMillis - ntp_state_start_millis >= 18000) {
+        Serial.println("\n[Radio] Wi-Fi connection failed. Keeping current system time.");
+        finishNtpSync(false);
+      } else if (curMillis - ntp_last_dot_millis >= 250) {
+        ntp_last_dot_millis = curMillis;
+        Serial.print(".");
+      }
+      break;
+
+    case NTP_STATE_WAIT_BEFORE_SNTP:
+      if (sntpSyncTriggered) {
+        finishNtpSync(true);
+      } else if (curMillis - ntp_state_start_millis >= 500) {
+        sntp_restart();
+        ntp_state_start_millis = curMillis;
+        ntp_sync_state = NTP_STATE_WAITING_SNTP;
+      }
+      break;
+
+    case NTP_STATE_WAITING_SNTP:
+      if (sntpSyncTriggered) {
+        finishNtpSync(true);
+      } else if (curMillis - ntp_state_start_millis >= 15000) {
+        Serial.println("[NTP] Sync timed out.");
+        finishNtpSync(false);
+      }
+      break;
+  }
+}
+
+#define NTC_R_FIXED     18000.0f // Value of series resistor
+#define R_NOMINAL       10000.0  // NTC nominal resistance at 25C
+#define B_COEFFICIENT   3950.0   // B-value from datasheet
+#define T_NOMINAL       298.15   // 25C in Kelvin
+
+void process_temperature(void)
+{
+  static uint32_t next_millis = 0;
+  uint32_t cur_millis;
+  float voltage, r_ntc, t_kelvin;
+  
+  if ((cur_millis = millis()) > next_millis) {
+    next_millis = cur_millis + 1000;
+    voltage = analogReadMilliVolts(NTC_PIN)/1000.0f;
+    r_ntc = NTC_R_FIXED * voltage / (VCC_ESP32 - voltage);
+    // B-parameter equation fortemperature
+    t_kelvin = 1.0f / ((1.0f / T_NOMINAL) + (1.0f / B_COEFFICIENT) * log(r_ntc / R_NOMINAL));
+    t_fah = (t_kelvin - 273.15f)*1.8f + 32.0f + 0.5;
+    Serial.print(voltage);
+    Serial.println(" from NTC");
+    Serial.print(t_fah);
+    Serial.println(" deg F");
   }
 }
 
@@ -878,10 +628,37 @@ void process_brightness(void)
   if (cur_millis >= next_millis) {
     next_millis += 1000;
     v = analogReadMilliVolts(PHOTO_RES_PIN);
-    if (v > 2900)
-       aip33628_set_current(0); // Room is dark
-    else if (v < 2300)
-       aip33628_set_current(8);
+    Serial.print(v);
+    Serial.println(" mV from photoresistor");
+    // You have have to tune for your photoresistor here
+    if (v > 2000)
+      aip33628_set_current(0); // Room is dark
+    else if (v < 1800)
+      aip33628_set_current(8); // Room bright (with hysteresis
+  }
+}
+
+void printTemperature()
+{
+  aip33628_clear_all();
+
+  if ((t_fah >= 0) && (t_fah < 100)) {
+    // normal two-digit positive temperature
+    display_digit(HOUR_1S, t_fah/10, clock_color);
+    display_digit(MIN_10S, t_fah%10, clock_color);
+  } else if ((t_fah >= 100) && (t_fah <= 199)) {
+    // Three digit positive temperature
+    display_digit(HOUR_10S, 1, clock_color);
+    display_digit(HOUR_1S, (t_fah - 100)/10, clock_color);
+    display_digit(MIN_10S, (t_fah - 100)%10, clock_color);
+  } else if ((t_fah >= -99) && (t_fah < 0)) {
+    // Two digit negative temperature
+    display_minus(HOUR_10S, clock_color);
+    display_digit(HOUR_1S, (-t_fah)/10, clock_color);
+    display_digit(MIN_10S, (-t_fah)%10, clock_color);
+  } else {
+    // Crazy temperature
+    display_bad();
   }
 }
 
@@ -910,7 +687,6 @@ void process_buttons(void)
       // 5-second hold threshold reached
       btn1_long_handled = true;
       Serial.println("[Button 1] 5-second hold detected! Rebooting into Config Mode...");
-      display_c0f6();
       preferences.begin("wifi_clock", false);
       preferences.putBool("force_config", true);
       preferences.end();
@@ -922,13 +698,25 @@ void process_buttons(void)
       // Button 1 transition LOW -> HIGH (released)
       unsigned long pressDuration = currentMillis - btn1_press_start;
       if (!btn1_long_handled && pressDuration >= 50 && pressDuration < 5000) {
-        // Brief press of Button 1 -> toggle display ON / OFF
-        display_on = !display_on;
-        Serial.printf("[Button 1] Brief press detected. Display toggled %s.\n", display_on ? "ON" : "OFF");
-        if (!display_on) {
-          aip33628_clear_all();
+        // Brief press of Button 1
+        Serial.println("[Button 1] Brief press detected");
+        if (mode == MODE_BLANK) {
+          mode = MODE_TIME;
         } else {
-          printLocalTime();
+          mode += 1;
+        }
+        switch (mode) {
+          case MODE_TIME:
+            printLocalTime();
+            break;
+         case MODE_TEMPERATURE:
+            printTemperature();
+            break;
+          case MODE_BLANK:
+            aip33628_clear_all();
+            break;
+          default:
+            break;
         }
       }
     }
@@ -945,7 +733,6 @@ void process_buttons(void)
       // 5-second hold threshold reached
       btn2_long_handled = true;
       Serial.println("[Button 2] 5-second hold detected! Rebooting into Config Mode...");
-      display_c0f6();
       preferences.begin("wifi_clock", false);
       preferences.putBool("force_config", true);
       preferences.end();
@@ -974,8 +761,18 @@ void process_buttons(void)
         preferences.putUChar("color", clock_color);
         preferences.end();
 
-        if (display_on) {
-          printLocalTime();
+        switch (mode) {
+          case MODE_TIME:
+            printLocalTime();
+            break;
+         case MODE_TEMPERATURE:
+            printTemperature();
+            break;
+          case MODE_BLANK:
+            aip33628_clear_all();
+            break;
+          default:
+            break;
         }
       }
     }
@@ -989,11 +786,8 @@ void process_buttons(void)
 
 void setup()
 {
-  Serial.begin(115200);
-  while (!Serial && millis() < 3000) {
-    delay(10);
-  }
-  Serial.println("\n--- ESP32-C3 Modular Dual Clock (NTP + DS1302) ---");
+  pinMode(BUZZER_PIN, OUTPUT);
+  tone(BUZZER_PIN, 2000, 500);
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
@@ -1001,6 +795,12 @@ void setup()
   aip33628_init(AIP33628_1_CLK_PIN, AIP33628_1_DATA_PIN,
                 AIP33628_2_CLK_PIN, AIP33628_2_DATA_PIN);
   aip33628_set_current(8);
+
+  Serial.begin(115200);
+  while (!Serial && millis() < 3000) {
+    delay(10);
+  }
+  Serial.println("\n--- ESP32-C3 Modular Dual Clock (NTP + DS1302) ---");
 
   // Check if either button is pressed at startup OR if force_config flag was set in Preferences
   bool btn1 = (digitalRead(BUTTON1_PIN) == LOW);
@@ -1014,7 +814,10 @@ void setup()
   preferences.end();
 
   if (btn1 || btn2 || forceConfig) {
-    runConfigMode(); // Enters Config Mode loop (AP: clock0, HTTP server)
+    in_config_mode = true;
+    display_conf();
+    config_mode_init();
+    return;
   }
 
   // Normal boot mode: load settings from Preferences flash
@@ -1061,45 +864,51 @@ void setup()
   sntp_set_sync_mode(SNTP_SYNC_MODE_SMOOTH);
   configTzTime(effectiveTz.c_str(), active_ntp_server1.c_str(), active_ntp_server2.c_str());
 
-  bool syncOk = performNtpSync();
-
   time_t currentNow = time(NULL);
-
-  if (syncOk) {
-    Serial.print("[Boot] Synchronized Local Time: ");
-    printLocalTime();
-  }
-
-  next_sync_epoch = calculateNextSyncEpoch(currentNow, syncOk);
-  printScheduledTime("[Schedule] Next NTP sync alarm:", next_sync_epoch);
-
   next_minute_print_epoch = (currentNow / 60 + 1) * 60;
   printScheduledTime("[Schedule] Next minute print alarm:",
                      next_minute_print_epoch);
+
+  // Start initial NTP sync non-blockingly; progress will be handled in loop()
+  startNtpSync();
 
   Serial.println("\nSetup complete. Running wall-clock alarm loop:\n");
 }
 
 void loop()
 {
+  if (in_config_mode) {
+    process_config_mode();
+    delay(5);
+    return;
+  }
+
   time_t now = time(NULL);
 
   updateNtpTimeValidStatus(now);
 
   if (next_minute_print_epoch > 0 && now >= next_minute_print_epoch) {
-    printLocalTime();
+    switch (mode) {
+      case MODE_TIME:
+        printLocalTime();
+        break;
+      case MODE_TEMPERATURE:
+        printTemperature();
+        break;
+      case MODE_BLANK:
+        aip33628_clear_all();
+        break;
+      default:
+        break;
+    }
     next_minute_print_epoch = (now / 60 + 1) * 60;
   }
 
-  if (next_sync_epoch > 0 && now >= next_sync_epoch) {
-    bool syncOk = performNtpSync();
-    now = time(NULL);
-    next_sync_epoch = calculateNextSyncEpoch(now, syncOk);
-    printScheduledTime("[Schedule] Next NTP sync alarm:", next_sync_epoch);
-  }
+  process_ntp_sync(now);
 
   process_brightness();
+  process_temperature();
   process_buttons();
 
-  delay(100);
+  delay(10);
 }
