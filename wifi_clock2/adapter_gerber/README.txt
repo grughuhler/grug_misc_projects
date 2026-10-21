@@ -23,3 +23,7 @@ mount.  You will need:
   should be fine, probably better in fact.  The DS1302 has an internal
   40K pull-down so the level converter pull-ups need to be strong.
 
+* A 220uF (or bigger) electrolytic capacitor for bulk decoupling.  You
+  must choose one that fits in the clock case.  I used a nice Nichicon.
+  The edge of the board has a bunch of holes: one ground and several 3.3V.
+  Solder the cap there (through-hole).
