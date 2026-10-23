@@ -646,138 +646,143 @@ void printTemperature()
     // normal two-digit positive temperature
     display_digit(HOUR_1S, t_fah/10, clock_color);
     display_digit(MIN_10S, t_fah%10, clock_color);
+    display_digit(MIN_1S, 15, clock_color);
   } else if ((t_fah >= 100) && (t_fah <= 199)) {
     // Three digit positive temperature
     display_digit(HOUR_10S, 1, clock_color);
     display_digit(HOUR_1S, (t_fah - 100)/10, clock_color);
     display_digit(MIN_10S, (t_fah - 100)%10, clock_color);
+    display_digit(MIN_1S, 15, clock_color);
   } else if ((t_fah >= -99) && (t_fah < 0)) {
     // Two digit negative temperature
     display_minus(HOUR_10S, clock_color);
     display_digit(HOUR_1S, (-t_fah)/10, clock_color);
     display_digit(MIN_10S, (-t_fah)%10, clock_color);
+    display_digit(MIN_1S, 15, clock_color);
   } else {
     // Crazy temperature
     display_bad();
   }
 }
 
+void update_display(void)
+{
+  switch (mode) {
+    case MODE_TIME:
+      printLocalTime();
+      break;
+    case MODE_TEMPERATURE:
+      printTemperature();
+      break;
+    case MODE_BLANK:
+      aip33628_clear_all();
+      break;
+    default:
+      break;
+  }
+}
+
+struct Button {
+  uint8_t pin;
+  uint32_t last_sample_ms;
+  uint32_t press_start_ms;
+  uint8_t press_count;
+  bool waiting_release;
+};
+
+static Button btn1 = {BUTTON1_PIN, 0, 0, 0, false};
+static Button btn2 = {BUTTON2_PIN, 0, 0, 0, false};
+
+// Examines the button every 10 ms.
+// Reports a press (duration in ms) only if seen pressed at least 3 times in a row,
+// when the button is seen not pressed or 5 seconds has passed, whichever comes first.
+static uint32_t button_poll(struct Button &b)
+{
+  uint32_t now = millis();
+  if (now - b.last_sample_ms < 10) {
+    return 0;
+  }
+  b.last_sample_ms = now;
+
+  bool pressed = (digitalRead(b.pin) == LOW);
+
+  if (b.waiting_release) {
+    if (!pressed) {
+      b.waiting_release = false;
+      b.press_count = 0;
+    }
+    return 0;
+  }
+
+  if (pressed) {
+    if (b.press_count == 0) {
+      b.press_start_ms = now;
+    }
+    if (b.press_count < 3) {
+      b.press_count++;
+    }
+    uint32_t duration = now - b.press_start_ms;
+    if (b.press_count >= 3 && duration >= 5000) {
+      b.waiting_release = true;
+      return duration;
+    }
+  } else {
+    if (b.press_count >= 3) {
+      uint32_t duration = now - b.press_start_ms;
+      b.press_count = 0;
+      return duration;
+    }
+    b.press_count = 0;
+  }
+
+  return 0;
+}
+
 void process_buttons(void)
 {
-  static unsigned long btn1_press_start = 0;
-  static bool btn1_long_handled = false;
-  static bool btn1_last_state = HIGH;
+  uint32_t b1_ms = button_poll(btn1);
+  uint32_t b2_ms = button_poll(btn2);
 
-  static unsigned long btn2_press_start = 0;
-  static bool btn2_long_handled = false;
-  static bool btn2_last_state = HIGH;
-
-  unsigned long currentMillis = millis();
-
-  bool btn1_pressed = (digitalRead(BUTTON1_PIN) == LOW);
-  bool btn2_pressed = (digitalRead(BUTTON2_PIN) == LOW);
-
-  // --- Button 1 Handling ---
-  if (btn1_pressed) {
-    if (btn1_last_state == HIGH) {
-      // Button 1 transition HIGH -> LOW (press started)
-      btn1_press_start = currentMillis;
-      btn1_long_handled = false;
-    } else if (!btn1_long_handled && (currentMillis - btn1_press_start >= 5000)) {
-      // 5-second hold threshold reached
-      btn1_long_handled = true;
-      Serial.println("[Button 1] 5-second hold detected! Rebooting into Config Mode...");
-      preferences.begin("wifi_clock", false);
-      preferences.putBool("force_config", true);
-      preferences.end();
-      delay(500);
-      ESP.restart();
-    }
-  } else {
-    if (btn1_last_state == LOW) {
-      // Button 1 transition LOW -> HIGH (released)
-      unsigned long pressDuration = currentMillis - btn1_press_start;
-      if (!btn1_long_handled && pressDuration >= 50 && pressDuration < 5000) {
-        // Brief press of Button 1
-        Serial.println("[Button 1] Brief press detected");
-        if (mode == MODE_BLANK) {
-          mode = MODE_TIME;
-        } else {
-          mode += 1;
-        }
-        switch (mode) {
-          case MODE_TIME:
-            printLocalTime();
-            break;
-         case MODE_TEMPERATURE:
-            printTemperature();
-            break;
-          case MODE_BLANK:
-            aip33628_clear_all();
-            break;
-          default:
-            break;
-        }
-      }
-    }
+  if (b1_ms >= 5000 || b2_ms >= 5000) {
+    Serial.println("[Button] 5-second hold detected! Rebooting into Config Mode...");
+    preferences.begin("wifi_clock", false);
+    preferences.putBool("force_config", true);
+    preferences.end();
+    delay(500);
+    ESP.restart();
   }
-  btn1_last_state = btn1_pressed ? LOW : HIGH;
 
-  // --- Button 2 Handling ---
-  if (btn2_pressed) {
-    if (btn2_last_state == HIGH) {
-      // Button 2 transition HIGH -> LOW (press started)
-      btn2_press_start = currentMillis;
-      btn2_long_handled = false;
-    } else if (!btn2_long_handled && (currentMillis - btn2_press_start >= 5000)) {
-      // 5-second hold threshold reached
-      btn2_long_handled = true;
-      Serial.println("[Button 2] 5-second hold detected! Rebooting into Config Mode...");
-      preferences.begin("wifi_clock", false);
-      preferences.putBool("force_config", true);
-      preferences.end();
-      delay(500);
-      ESP.restart();
+  if (b1_ms > 0) {
+    Serial.printf("[Button 1] Brief press detected (%lu ms)\n", (unsigned long)b1_ms);
+    if (mode == MODE_BLANK) {
+      mode = MODE_TIME;
+    } else {
+      mode += 1;
     }
-  } else {
-    if (btn2_last_state == LOW) {
-      // Button 2 transition LOW -> HIGH (released)
-      unsigned long pressDuration = currentMillis - btn2_press_start;
-      if (!btn2_long_handled && pressDuration >= 50 && pressDuration < 5000) {
-        // Brief press of Button 2 -> cycle color BLUE -> GREEN -> RED -> BLUE
-        if (clock_color == BLUE) {
-          clock_color = GREEN;
-        } else if (clock_color == GREEN) {
-          clock_color = RED;
-        } else {
-          clock_color = BLUE;
-        }
-
-        Serial.printf("[Button 2] Brief press detected. Color changed to %s.\n",
-                      clock_color == BLUE ? "BLUE" : (clock_color == GREEN ? "GREEN" : "RED"));
-
-        // Save new color choice to preferences
-        preferences.begin("wifi_clock", false);
-        preferences.putUChar("color", clock_color);
-        preferences.end();
-
-        switch (mode) {
-          case MODE_TIME:
-            printLocalTime();
-            break;
-         case MODE_TEMPERATURE:
-            printTemperature();
-            break;
-          case MODE_BLANK:
-            aip33628_clear_all();
-            break;
-          default:
-            break;
-        }
-      }
-    }
+    update_display();
   }
-  btn2_last_state = btn2_pressed ? LOW : HIGH;
+
+  if (b2_ms > 0) {
+    // Brief press of Button 2 -> cycle color BLUE -> GREEN -> RED -> BLUE
+    if (clock_color == BLUE) {
+      clock_color = GREEN;
+    } else if (clock_color == GREEN) {
+      clock_color = RED;
+    } else {
+      clock_color = BLUE;
+    }
+
+    Serial.printf("[Button 2] Brief press detected (%lu ms). Color changed to %s.\n",
+                  (unsigned long)b2_ms,
+                  clock_color == BLUE ? "BLUE" : (clock_color == GREEN ? "GREEN" : "RED"));
+
+    // Save new color choice to preferences
+    preferences.begin("wifi_clock", false);
+    preferences.putUChar("color", clock_color);
+    preferences.end();
+
+    update_display();
+  }
 }
 
 // ==================================================
@@ -888,19 +893,7 @@ void loop()
   updateNtpTimeValidStatus(now);
 
   if (next_minute_print_epoch > 0 && now >= next_minute_print_epoch) {
-    switch (mode) {
-      case MODE_TIME:
-        printLocalTime();
-        break;
-      case MODE_TEMPERATURE:
-        printTemperature();
-        break;
-      case MODE_BLANK:
-        aip33628_clear_all();
-        break;
-      default:
-        break;
-    }
+    update_display();
     next_minute_print_epoch = (now / 60 + 1) * 60;
   }
 

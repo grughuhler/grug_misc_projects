@@ -1,9 +1,7 @@
 #include "aip33628.h"
 #include <string.h>
 
-#include <driver/spi_master.h>
-#include <esp_rom_gpio.h>
-#include <soc/gpio_sig_map.h>
+#include <soc/gpio_struct.h>
 
 // COM scan phase pattern for COM0+COM1, COM2+COM3, COM4+COM5,
 // COM6+COM7
@@ -18,110 +16,79 @@ static uint16_t segments[NUM_DRIVERS][4];
 static volatile uint8_t current_is_val = 0; // Default IS current setting = 0
 
 static esp_timer_handle_t frame_timer = NULL;
-static spi_device_handle_t spi_handle = NULL;
 
-/**
- * @brief Initialize ESP32 Hardware SPI2 for 1 MHz LSB-first
- * transmission.
- */
-
-static void init_spi(void)
+// ~100 ns delay at 160 MHz
+static inline void delay_100ns(void)
 {
-  if (spi_handle != NULL) return;
-
-  spi_bus_config_t buscfg = {};
-  buscfg.mosi_io_num = data_pins[1];
-  buscfg.miso_io_num = -1;
-  buscfg.sclk_io_num = clk_pins[1];
-  buscfg.quadwp_io_num = -1;
-  buscfg.quadhd_io_num = -1;
-  buscfg.max_transfer_sz = 32;
-
-  spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_DISABLED);
-
-  spi_device_interface_config_t devcfg = {};
-  devcfg.clock_speed_hz = 1000000; // 1 MHz SPI clock rate (datasheet max)
-  devcfg.mode = 0;                 // SPI Mode 0 (CPOL=0, CPHA=0)
-  devcfg.spics_io_num = -1;        // CS not used
-  devcfg.queue_size = 1;
-  devcfg.flags = SPI_DEVICE_BIT_LSBFIRST; // LSB first transmission
-
-  spi_bus_add_device(SPI2_HOST, &devcfg, &spi_handle);
+  for (int i = 0; i < 4; i++) {
+    __asm__ __volatile__("nop");
+  }
 }
 
-
 /**
- * @brief Transmit single 30-bit frame to an AiP33628 driver.  Uses
- * Hardware SPI for bits 0..28 @ 1 MHz, and 30th bit + Latch sequence
- * in GPIO.
+ * @brief Transmit single 30-bit frame to an AiP33628 driver using
+ * direct atomic GPIO set/clear register writes (GPIO.out_w1ts / out_w1tc).
  */
-
 static void send_frame_driver(uint8_t driver_idx, uint8_t phase_idx)
 {
-  uint8_t clk_pin = clk_pins[driver_idx];
-  uint8_t data_pin = data_pins[driver_idx];
+  uint32_t clk_mask  = (1UL << clk_pins[driver_idx]);
+  uint32_t data_mask = (1UL << data_pins[driver_idx]);
 
   uint16_t seg_val = segments[driver_idx][phase_idx];
-  uint8_t com_val = scan_pattern[phase_idx];
-  uint8_t is_val = current_is_val & 0x0F;
+  uint8_t com_val  = scan_pattern[phase_idx];
+  uint8_t is_val   = current_is_val & 0x0F;
 
   // Pack 30 bits into uint32_t:
   // Bits 0..15  : seg_val
   // Bits 16..23 : com_val
   // Bits 24..27 : is_val
-  // Bits 28..29 : 0
+  // Bits 28..29 : 0 (reserved)
   uint32_t packet = ((uint32_t)seg_val) |
-    (((uint32_t)com_val) << 16) |
-    (((uint32_t)is_val) << 24);
+                    (((uint32_t)com_val) << 16) |
+                    (((uint32_t)is_val) << 24);
 
-  // Ensure pins are standard GPIO outputs for Start condition
-  esp_rom_gpio_connect_out_signal(clk_pin, SIG_GPIO_OUT_IDX,
-                                  false, false);
-  esp_rom_gpio_connect_out_signal(data_pin, SIG_GPIO_OUT_IDX,
-                                  false, false);
-  pinMode(clk_pin, OUTPUT);
-  pinMode(data_pin, OUTPUT);
+  // Entry condition: CLK and DATA are LOW.
+  // Send "End Control" pulse (rising edge on DATA while CLK is LOW)
+  // to exit latch mode and prepare shift register for the 30-bit frame.
+  GPIO.out_w1ts.val = data_mask;
+  delay_100ns();
+  GPIO.out_w1tc.val = data_mask;
+  delay_100ns();
 
-  // Start Control Signal: CLK is LOW, DATA transitions LOW -> HIGH
-  digitalWrite(clk_pin, LOW);
-  digitalWrite(data_pin, LOW);
-  delayMicroseconds(1);
-  digitalWrite(data_pin, HIGH);
-  delayMicroseconds(1);
+  // Shift out all 30 bits (LSB first).
+  // DATA only changes while CLK is solidly LOW.
+  for (int bit = 0; bit < 30; bit++) {
+    if (packet & 1) {
+      GPIO.out_w1ts.val = data_mask;
+    } else {
+      GPIO.out_w1tc.val = data_mask;
+    }
+    packet >>= 1;
+    delay_100ns();                // DATA setup time before CLK rises
 
-  // Connect target driver pins to Hardware SPI peripheral matrix
-  esp_rom_gpio_connect_out_signal(clk_pin, FSPICLK_OUT_IDX, false, false);
-  esp_rom_gpio_connect_out_signal(data_pin, FSPID_OUT_IDX, false, false);
+    GPIO.out_w1ts.val = clk_mask; // Rising edge shifts bit into AiP33628
+    delay_100ns();                // CLK high pulse width
 
-  // Hardware SPI transfer of bits 0..28 (29 bits) at 1 MHz (LSB
-  // first)
-  spi_transaction_t t = {};
-  t.length = 29; // 29 bits shifted by SPI hardware
-  t.tx_buffer = &packet;
-  spi_device_polling_transmit(spi_handle, &t);
+    // Leave CLK HIGH after the 30th bit (bit == 29) for the Latch sequence
+    if (bit < 29) {
+      GPIO.out_w1tc.val = clk_mask;
+      delay_100ns();              // Ensure CLK is LOW before DATA changes next bit
+    }
+  }
 
-  // Reconnect pins back to GPIO output mode for 30th bit & Latch
-  // sequence
-  esp_rom_gpio_connect_out_signal(clk_pin, SIG_GPIO_OUT_IDX,
-                                  false, false);
-  esp_rom_gpio_connect_out_signal(data_pin, SIG_GPIO_OUT_IDX,
-                                  false, false);
+  // CLK is HIGH. Bring DATA LOW first (bit 29 is 0, so it is already LOW,
+  // but be explicit), then create a rising edge on DATA while CLK is HIGH
+  // to latch the 30-bit shift register into the output latches.
+  GPIO.out_w1tc.val = data_mask;
+  delay_100ns();
+  GPIO.out_w1ts.val = data_mask;  // Rising edge on DATA while CLK is HIGH -> Latch!
+  delay_100ns();
+  GPIO.out_w1tc.val = data_mask;
+  delay_100ns();
+  GPIO.out_w1tc.val = clk_mask;
+  delay_100ns();
 
-  // 30th Bit (Bit 29 = 0) & Latch Sequence (DATA LOW -> HIGH while
-  // 30th CLK is HIGH)
-  digitalWrite(data_pin, LOW);
-  delayMicroseconds(1);
-  digitalWrite(clk_pin, HIGH); // 30th CLK pulse rising edge
-  delayMicroseconds(1);
-
-  // Latch trigger DURING 30th CLK pulse: DATA LOW -> HIGH while CLK
-  // is HIGH
-  digitalWrite(data_pin, HIGH);
-  delayMicroseconds(1);
-
-  digitalWrite(clk_pin, LOW);  // 30th CLK pulse falling edge
-  delayMicroseconds(1);
-  digitalWrite(data_pin, LOW);
+  // Leave with both CLK and DATA LOW.
 }
 
 static void send_frame_cb(void* arg)
@@ -154,8 +121,6 @@ void aip33628_init(uint8_t driver1_clock_pin, uint8_t driver1_data_pin,
   // Datasheet Section 4.2 (Power-On Reset): Hold lines idle for at
   // least 200us after power-on while internal registers stabilize.
   delayMicroseconds(250);
-
-  init_spi();
 
   // Clear segments state in memory
   aip33628_clear_all();
