@@ -4,8 +4,12 @@
 #include <soc/gpio_struct.h>
 
 // COM scan phase pattern for COM0+COM1, COM2+COM3, COM4+COM5,
-// COM6+COM7
-static const uint8_t scan_pattern[4] = {0x03, 0x0C, 0x30, 0xC0};
+// COM6+COM7.  Keep in mind that COMn corresponds to pin COMn.
+//
+// Notice the values in phase_pattern are bit-reversed to match
+// the AIP33628 frame bit ordering.  The first phase is COM0+COM1.
+// that means 1100_0000 must go on the wire.
+static const uint8_t phase_pattern[4] = {0xc0, 0x30, 0x0c, 0x03};
 
 // Driver GPIO maps
 static uint8_t clk_pins[NUM_DRIVERS];
@@ -13,7 +17,10 @@ static uint8_t data_pins[NUM_DRIVERS];
 
 // State representation: uint16_t segments[NUM_DRIVERS][4]
 static uint16_t segments[NUM_DRIVERS][4];
-static volatile uint8_t current_is_val = 0; // Default IS current setting = 0
+
+// Current setting.  From dimest to brightest 0, 1, 2, ..., 15
+// Note that this must be bit reversed on the wire.
+static volatile uint8_t current_is_val = 0;
 
 static esp_timer_handle_t frame_timer = NULL;
 
@@ -23,6 +30,14 @@ static inline void delay_100ns(void)
   for (int i = 0; i < 4; i++) {
     __asm__ __volatile__("nop");
   }
+}
+
+static uint8_t reverse_4bit_bitwise(uint8_t n) {
+    // 1. Swap adjacent bits: (b3 b2 b1 b0) -> (b2 b3 b0 b1)
+    n = ((n & 0x05) << 1) | ((n & 0x0A) >> 1);
+    // 2. Swap 2-bit pairs:   (b2 b3 b0 b1) -> (b0 b1 b2 b3)
+    n = ((n & 0x03) << 2) | ((n & 0x0C) >> 2);
+    return n;
 }
 
 /**
@@ -35,8 +50,11 @@ static void send_frame_driver(uint8_t driver_idx, uint8_t phase_idx)
   uint32_t data_mask = (1UL << data_pins[driver_idx]);
 
   uint16_t seg_val = segments[driver_idx][phase_idx];
-  uint8_t com_val  = scan_pattern[phase_idx];
-  uint8_t is_val   = current_is_val & 0x0F;
+  uint8_t com_val  = phase_pattern[phase_idx];
+  uint8_t frame_is_val;
+
+  // Value must be bit reversed on the wire
+  frame_is_val = reverse_4bit_bitwise(current_is_val & 0xf);
 
   // Pack 30 bits into uint32_t:
   // Bits 0..15  : seg_val
@@ -45,7 +63,7 @@ static void send_frame_driver(uint8_t driver_idx, uint8_t phase_idx)
   // Bits 28..29 : 0 (reserved)
   uint32_t packet = ((uint32_t)seg_val) |
                     (((uint32_t)com_val) << 16) |
-                    (((uint32_t)is_val) << 24);
+                    (((uint32_t)frame_is_val) << 24);
 
   // Entry condition: CLK and DATA are LOW.
   // Send "End Control" pulse (rising edge on DATA while CLK is LOW)
@@ -167,7 +185,7 @@ void aip33628_ena_led(uint8_t driver_index, uint8_t phase_index,
                       uint8_t seg_bit)
 {
   if (driver_index < NUM_DRIVERS && phase_index < 4 && seg_bit < 16) {
-    segments[driver_index][phase_index] |= (1U << seg_bit);
+    segments[driver_index][phase_index] |= (1U << (15 - seg_bit));
   }
 }
 
@@ -175,7 +193,7 @@ void aip33628_dis_led(uint8_t driver_index, uint8_t phase_index,
                       uint8_t seg_bit)
 {
   if (driver_index < NUM_DRIVERS && phase_index < 4 && seg_bit < 16) {
-    segments[driver_index][phase_index] &= ~(1U << seg_bit);
+    segments[driver_index][phase_index] &= ~(1U << (15 - seg_bit));
   }
 }
 

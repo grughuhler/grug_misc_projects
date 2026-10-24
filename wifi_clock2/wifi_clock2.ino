@@ -12,12 +12,12 @@
 #define VCC_ESP32 3.3f
 
 // There are 33 RGB LEDs on the clock board.  Each RGB LED contains three
-// LEDs: a blue one, a green one, and a red one.  Below, there is a table
+// LEDs: a red one, a green one, and a blue one.  Below, there is a table
 // of all of the RGB LEDs.  These are offsets that select the color in LED
-// APIs.
-#define BLUE 0
+// APIs. Apply the offset to the segment.
+#define RED 0
 #define GREEN 1
-#define RED 2
+#define BLUE 2
 
 // ESP32-C3 SuperMini Pin Definitions for HU-058 Board
 
@@ -98,42 +98,43 @@ unsigned long ntp_last_dot_millis = 0;
 const struct {
   uint8_t driver;  // Which AIP33628 (0 or 1)
   uint8_t phase;   // COM pair sequence index
-  uint8_t segment; // Which segment (gives blue lED)
+  uint8_t segment; // Which segment (gives red lED)
 } led_list[33] = {
-  {1, 1, 13},
-  {1, 1, 10},
-  {1, 1, 7},
-  {1, 1, 4},
-  {1, 0, 13},
-  {1, 0, 10},
-  {1, 0, 7},
-  {1, 3, 13},
-  {1, 3, 10},
-  {1, 3, 7},
-  {1, 3, 4},
-  {1, 2, 13},
-  {1, 2, 10},
-  {1, 2, 7},
-  {0, 1, 13},
-  {0, 1, 10},
-  {0, 1, 7},
-  {0, 1, 4},
-  {0, 0, 13},
-  {0, 0, 10},
-  {0, 0, 7},
-  {0, 3, 13},
-  {0, 3, 10},
-  {0, 3, 7},
-  {0, 3, 4},
-  {0, 2, 13},
-  {0, 2, 10},
-  {0, 2, 7},
-  {0, 3, 1},
-  {0, 1, 1},
-  {0, 0, 1},
-  {1, 3, 1},
-  {1, 1, 1}
+  {1, 2, 0},
+  {1, 2, 3},
+  {1, 2, 6},
+  {1, 2, 9},
+  {1, 3, 0},
+  {1, 3, 3},
+  {1, 3, 6},
+  {1, 0, 0},
+  {1, 0, 3},
+  {1, 0, 6},
+  {1, 0, 9},
+  {1, 1, 0},
+  {1, 1, 3},
+  {1, 1, 6},
+  {0, 2, 0},
+  {0, 2, 3},
+  {0, 2, 6},
+  {0, 2, 9},
+  {0, 3, 0},
+  {0, 3, 3},
+  {0, 3, 6},
+  {0, 0, 0},
+  {0, 0, 3},
+  {0, 0, 6},
+  {0, 0, 9},
+  {0, 1, 0},
+  {0, 1, 3},
+  {0, 1, 6},
+  {0, 0, 12},
+  {0, 2, 12},
+  {0, 3, 12},
+  {1, 0, 12},
+  {1, 2, 12}
 };
+
 
 // This table lists the LEDs needed to form 0-9 and A-Z
 // as well as can be...
@@ -604,6 +605,8 @@ void process_temperature(void)
   static uint32_t next_millis = 0;
   uint32_t cur_millis;
   float voltage, r_ntc, t_kelvin;
+
+  if (NTC_PIN == -1) return;
   
   if ((cur_millis = millis()) > next_millis) {
     next_millis = cur_millis + 1000;
@@ -634,7 +637,7 @@ void process_brightness(void)
     if (v > 2000)
       aip33628_set_current(0); // Room is dark
     else if (v < 1800)
-      aip33628_set_current(8); // Room bright (with hysteresis
+      aip33628_set_current(8); // Room bright (with hysteresis)
   }
 }
 
@@ -763,18 +766,9 @@ void process_buttons(void)
   }
 
   if (b2_ms > 0) {
-    // Brief press of Button 2 -> cycle color BLUE -> GREEN -> RED -> BLUE
-    if (clock_color == BLUE) {
-      clock_color = GREEN;
-    } else if (clock_color == GREEN) {
-      clock_color = RED;
-    } else {
-      clock_color = BLUE;
-    }
-
-    Serial.printf("[Button 2] Brief press detected (%lu ms). Color changed to %s.\n",
-                  (unsigned long)b2_ms,
-                  clock_color == BLUE ? "BLUE" : (clock_color == GREEN ? "GREEN" : "RED"));
+    // Brief press of Button 2 -> cycle color RED -> GREEN -> BLUE -> RED
+    clock_color += 1;
+    if (clock_color > BLUE) clock_color = RED;
 
     // Save new color choice to preferences
     preferences.begin("wifi_clock", false);

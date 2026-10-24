@@ -60,8 +60,8 @@ my LAN.
 
 ### Clock Mode
 
-Press and release the top button to cycle the clock color among blue,
-green, and red.
+Press and release the top button to cycle the clock color among red,
+green, and blue.
 
 The bottom button cycles among displaying the time, the temperature,
 and turning the display off (the clock remain on).
